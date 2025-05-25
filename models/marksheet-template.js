@@ -21,6 +21,18 @@ const MarksheetTemplateModel = mongoose.model('marksheet-template', {
         required: true,
         trim: true,
     },
+    templateUrl: {
+        type: String,
+        required: true,
+        trim: true,
+    },
+    examStructure: {},
+    subjects: {},
+    createdBy: {
+        type: String,
+        required: true,
+        trim: true,
+    },
     createdAt: {
         type: Date,
         default: Date.now,

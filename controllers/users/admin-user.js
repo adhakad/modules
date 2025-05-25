@@ -1,22 +1,25 @@
 'use strict';
+const { SMTP_API_KEY, SMTP_HOST, SENDER_EMAIL_ADDRESS } = process.env;
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
-const speakeasy = require('speakeasy');
 const tokenService = require('../../services/admin-token');
 const AdminUserModel = require('../../models/users/admin-user');
 const AdminPlanModel = require('../../models/users/admin-plan');
+const SchoolModel = require('../../models/school');
 const PaymentModel = require('../../models/payment');
 const OTPModel = require('../../models/otp');
+const smtp_host = SMTP_HOST;
+const smtp_api_key = SMTP_API_KEY;
+const sender_email_address = SENDER_EMAIL_ADDRESS;
 
 const transporter = nodemailer.createTransport({
-    service: "gmail",
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
+    host: smtp_host,
+    port: 465,
+    secure: true,
     auth: {
-        user: `dhakaddeepak9340700360@gmail.com`,
-        pass: 'cbgcwsgpajyhvztj'
+        user: `apikey`,
+        pass: smtp_api_key
     },
 });
 
@@ -26,23 +29,23 @@ let LoginAdmin = async (req, res, next) => {
         let { email, password } = req.body;
         let admin = await AdminUserModel.findOne({ email: email });
         if (!admin) {
-            return res.status(404).json({ errorMsg: 'Username or password invalid !' });
+            return res.status(404).json({ errorMsg: 'Username or password invalid!' });
         }
         if (!admin.verified) {
-            return res.status(400).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services.` });
+            return res.status(400).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services!` });
         }
         let adminId = admin._id;
         let adminPlan = await AdminPlanModel.findOne({ adminId: adminId });
         if (!adminPlan) {
-            return res.status(404).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services.` });
+            return res.status(404).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services!` });
         }
 
         if (adminPlan.expiryStatus === true) {
-            return res.status(400).json({ errorMsg: `Your ${adminPlan.activePlan} plan has expired. Please purchase your plan to continue enjoying Schooliya's services.` });
+            return res.status(400).json({ errorMsg: `Your ${adminPlan.activePlan} plan has expired. Please purchase your plan to continue enjoying Schooliya's services!` });
         }
         const passwordMatch = await bcrypt.compare(password, admin.password);
         if (!passwordMatch) {
-            return res.status(400).json({ errorMsg: 'Username or password invalid !' });
+            return res.status(400).json({ errorMsg: 'Username or password invalid!' });
         }
         const payload = { id: admin._id, email: admin.email };
         const accessToken = await tokenService.getAccessToken(payload);
@@ -51,7 +54,7 @@ let LoginAdmin = async (req, res, next) => {
         // }
         // return res.status(400).json({ errorMsg: 'Login error !' })
     } catch (error) {
-        return res.status(500).json({ errorMsg: 'Internal Server Error !' });
+        return res.status(500).json({ errorMsg: 'Internal Server Error!' });
     }
 }
 
@@ -64,7 +67,7 @@ let RefreshToken = async (req, res, next) => {
             res.send({ accessToken })
         }
         else {
-            res.status(403).send('token Unavailable!!')
+            res.status(403).send('Token unavailable!')
         }
     } catch (err) {
         res.status(500).json(err)
@@ -72,19 +75,20 @@ let RefreshToken = async (req, res, next) => {
 }
 
 let SignupAdmin = async (req, res, next) => {
-    const secret = speakeasy.generateSecret({ length: 20 });
+    function generateSecureOTP() {
+        const otp = crypto.randomInt(100000, 1000000); // Generates a number between 100000 and 999999
+        return otp;
+    }
+    const secureOtp = generateSecureOTP();
+
     const { email, password, name, mobile, city, state, address, pinCode, schoolName, affiliationNumber } = req.body;
     try {
         const existingUser = await AdminUserModel.findOne({ email });
         if (existingUser) {
             if (!existingUser.verified) {
                 await OTPModel.deleteMany({ email });
-                const token = speakeasy.totp({
-                    secret: secret.base32,
-                    encoding: 'base32'
-                });
-                await OTPModel.create({ email, secret: secret.base32 });
-                sendEmail(email, token);
+                await OTPModel.create({ email, secureOtp: secureOtp });
+                sendEmail(email, secureOtp);
                 return res.status(400).json({ verified: false, paymentMode: true, email });
             }
             if (existingUser.verified) {
@@ -97,7 +101,7 @@ let SignupAdmin = async (req, res, next) => {
                     if (existingUserPlan.expiryStatus == true) {
                         return res.status(400).json({ verified: true, paymentMode: true, email, adminInfo: existingUser });
                     }
-                    return res.status(400).json({ verified: true, paymentMode: false, errorMsg: `Your ${existingUserPlan.activePlan} plan is already active, enjoy your services.` });
+                    return res.status(400).json({ verified: true, paymentMode: false, errorMsg: `Your ${existingUserPlan.activePlan} plan is already active, enjoy your services!` });
                 }
             }
 
@@ -126,69 +130,86 @@ let SignupAdmin = async (req, res, next) => {
             schoolId: schoolId
         };
 
-        const [createdUser, createdOTP] = await Promise.all([
-            AdminUserModel.create(userData),
-            OTPModel.create({ email, secret: secret.base32 })
+        const createUser = await AdminUserModel.create(userData);
+        sendEmail(email, secureOtp);
+        const schoolData = {
+            adminId: createUser._id,
+            schoolName: schoolName,
+            affiliationNumber: affiliationNumber
+        }
+        console.log("a")
+        const [createdOTP, createSchool] = await Promise.all([
+            OTPModel.create({ email, secureOtp: secureOtp }),
+            SchoolModel.create(schoolData)
         ]);
-        const token = speakeasy.totp({
-            secret: createdOTP.secret,
-            encoding: 'base32'
-        });
-        sendEmail(email, token);
-        return res.status(200).json({ successMsg: 'Admin registered successfully.', email });
+        console.log("b")
+        return res.status(200).json({ successMsg: 'Admin registered successfully', email });
     } catch (error) {
         return res.status(500).json({ errorMsg: 'Internal Server Error!' });
     }
 }
 
+
 let ForgotPassword = async (req, res, next) => {
-    const secret = speakeasy.generateSecret({ length: 20 });
+    function generateSecureOTP() {
+        const otp = crypto.randomInt(100000, 1000000); // Generates a number between 100000 and 999999
+        return otp;
+    }
+    const secureOtp = generateSecureOTP();
     try {
         const { email } = req.body;
         const admin = await AdminUserModel.findOne({ email: email });
         if (!admin) {
-            return res.status(404).json({ errorMsg: 'Email address not found !' });
+            return res.status(404).json({ errorMsg: 'Email address not found!' });
         }
         if (!admin.verified) {
-            return res.status(400).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services.` });
+            return res.status(400).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services!` });
         }
         let adminId = admin._id;
         let adminPlan = await AdminPlanModel.findOne({ adminId: adminId });
         if (!adminPlan) {
-            return res.status(404).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services.` });
+            return res.status(404).json({ errorMsg: `Your plan purchase process is incomplete. Please complete the purchase process to enjoy Schooliya's services!` });
         }
         if (adminPlan.expiryStatus === true) {
-            return res.status(400).json({ errorMsg: `Your ${adminPlan.activePlan} plan has expired. Please purchase your plan to continue enjoying Schooliya's services.` });
+            return res.status(400).json({ errorMsg: `Your ${adminPlan.activePlan} plan has expired. Please purchase your plan to continue enjoying Schooliya's services!` });
         }
-        const createdOTP = await OTPModel.create({ email, secret: secret.base32 });
-        const token = speakeasy.totp({
-            secret: createdOTP.secret,
-            encoding: 'base32'
-        });
-        sendEmail(email, token);
-        return res.status(200).json({ successMsg: 'Forgot password otp send successfully.', email: email });
+        await OTPModel.deleteMany({ email });
+        const createdOTP = await OTPModel.create({ email, secureOtp: secureOtp });
+        sendEmail(email, secureOtp);
+        return res.status(200).json({ successMsg: 'Forgot password otp send successfully', email: email });
 
     } catch (error) {
-        return res.status(500).json({ errorMsg: 'Internal Server Error !' });
+        return res.status(500).json({ errorMsg: 'Internal Server Error!' });
     }
 }
 
-async function sendEmail(email, token) {
+async function sendEmail(email, secureOtp) {
     const mailOptions = {
-        from: { name: 'Schooliya', address: 'dhakaddeepak9340700360@gmail.com' },
+        from: { name: 'Schooliya', address: sender_email_address },
         to: email,
-        subject: 'OTP for Email Verification',
-        html: `<div style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
-        <p style="color: #666;">You have requested an OTP to verify your Schooliya account. If this was you, please input the code below to continue.</p>
-        <p style="color: #000;margin:10px;letter-spacing:2px;"><strong>${token}</strong></p>
-    </div>`
+        subject: 'Your OTP for Email Verification',
+        html: `<div style="font-family: Arial, sans-serif; background-color: #f9f9f9; padding: 20px; border-radius: 10px; max-width: 600px; margin: auto;">
+            <p style="color: #555; font-size: 16px;">
+                We received a request to verify your email address for your Schooliya account. Please use the OTP below to complete your verification:
+            </p>
+            <p style="font-size: 22px; color: #000; text-align: center; letter-spacing: 2px; margin: 20px 0;"><strong>${secureOtp}</strong></p>
+            <p style="color: #555; font-size: 16px;">
+                If you didn’t request this, please ignore this email.
+            </p>
+            <p style="color: #555; font-size: 16px;">
+                Best regards,<br/>
+                The Schooliya Team
+            </p>
+        </div>`
     };
+
     try {
         await transporter.sendMail(mailOptions);
     } catch (error) {
-        res.status(500).json({ errorMsg: 'Error sending email !' });
+        res.status(500).json({ errorMsg: 'Error sending email!' });
     }
 }
+
 
 let VerifyOTP = async (req, res, next) => {
 
@@ -203,25 +224,19 @@ let VerifyOTP = async (req, res, next) => {
         if (!otp) {
             return res.status(404).json({ errorMsg: "Your OTP has expired!" });
         }
-
-        const verified = speakeasy.totp.verify({
-            secret: otp.secret,
-            encoding: 'base32',
-            token: userEnteredOTP,
-            window: 6
-        });
-
-        if (!verified) {
-            return res.status(400).json({ errorMsg: "Invalid OTP" });
+        if (userEnteredOTP !== otp.secureOtp) {
+            return res.status(400).json({ errorMsg: "Invalid OTP!" });
 
         }
-        const objectId = user._id;
-        let update = await AdminUserModel.findByIdAndUpdate(objectId, { $set: { verified: true } }, { new: true });
-        if (update) {
-            return res.status(200).json({ successMsg: "Congratulations! Your email has been successfully verified. You can now proceed with your payment.", verified: true, adminInfo: user });
+        if (userEnteredOTP == otp.secureOtp) {
+            const objectId = user._id;
+            let update = await AdminUserModel.findByIdAndUpdate(objectId, { $set: { verified: true } }, { new: true });
+            if (update) {
+                return res.status(200).json({ successMsg: "Congratulations! Your email has been successfully verified. You can now proceed with your payment", verified: true, adminInfo: user });
+            }
         }
     } catch (err) {
-        return res.status(500).json({ errorMsg: "Internal server error" });
+        return res.status(500).json({ errorMsg: "Internal server error!" });
     }
 }
 
@@ -239,10 +254,28 @@ let ResetPassword = async (req, res, next) => {
         const objectId = user._id;
         const updateAdminUser = await AdminUserModel.findByIdAndUpdate(objectId, { $set: resetAdminUserInfo }, { new: true });
         if (updateAdminUser) {
-            return res.status(200).json({ successMsg: 'Reset password successfully.' });
+            return res.status(200).json({ successMsg: 'Password reset successfully' });
         }
     } catch (error) {
-        return res.status(500).json({ errorMsg: 'Internal Server Error !' });
+        return res.status(500).json({ errorMsg: 'Internal Server Error!' });
+    }
+}
+let GetSingleAdminUser = async (req, res, next) => {
+    try {
+        const singleAdminPlan = await AdminPlanModel.findOne({ adminId: req.params.adminId });
+        const objectId = singleAdminPlan.adminId;
+        const singleAdminUser = await AdminUserModel.findOne({ _id: objectId });
+        return res.status(200).json(singleAdminUser);
+    } catch (error) {
+        return res.status(500).json('Internal Server Error!');
+    }
+}
+let GetSingleAdminPlan = async (req, res, next) => {
+    try {
+        const singleAdminPlan = await AdminPlanModel.findOne({ adminId: req.params.adminId });
+        return res.status(200).json(singleAdminPlan);
+    } catch (error) {
+        return res.status(500).json('Internal Server Error!');
     }
 }
 
@@ -253,4 +286,6 @@ module.exports = {
     ForgotPassword,
     ResetPassword,
     VerifyOTP,
+    GetSingleAdminPlan,
+    GetSingleAdminUser
 }
